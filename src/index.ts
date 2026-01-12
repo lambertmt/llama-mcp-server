@@ -13,6 +13,45 @@ interface LlamaServerConfig {
   stopSequences: string[];
 }
 
+// Agent tool-calling interfaces
+interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters?: Record<string, {
+    type: string;
+    description?: string;
+    required?: boolean;
+  }>;
+}
+
+interface ToolCall {
+  name: string;
+  arguments: Record<string, any>;
+}
+
+interface AgentMessage {
+  role: "user" | "assistant" | "tool";
+  content: string;
+  tool_call?: ToolCall;
+  tool_name?: string;
+}
+
+interface AgentConversation {
+  id: string;
+  messages: AgentMessage[];
+  tools: ToolDefinition[];
+  context: string;
+  createdAt: number;
+}
+
+interface AgentResponse {
+  type: "tool_call" | "final_answer";
+  conversation_id: string;
+  content?: string;
+  tool_call?: ToolCall;
+  tokens_used?: number;
+}
+
 interface LlamaCompletionRequest {
   prompt: string;
   temperature: number;
@@ -43,11 +82,13 @@ interface LlamaCompletionResponse {
 class LibreModelMCPServer {
   private server: McpServer;
   private config: LlamaServerConfig;
+  private conversations: Map<string, AgentConversation> = new Map();
+  private readonly CONVERSATION_TTL = 30 * 60 * 1000; // 30 minutes
 
   constructor() {
     this.server = new McpServer({
       name: "libremodel-mcp-server",
-      version: "1.0.0"
+      version: "1.1.0"
     });
 
     this.config = {
@@ -61,6 +102,129 @@ class LibreModelMCPServer {
 
     this.setupTools();
     this.setupResources();
+
+    // Cleanup old conversations periodically
+    setInterval(() => this.cleanupConversations(), 5 * 60 * 1000);
+  }
+
+  private cleanupConversations() {
+    const now = Date.now();
+    for (const [id, conv] of this.conversations) {
+      if (now - conv.createdAt > this.CONVERSATION_TTL) {
+        this.conversations.delete(id);
+      }
+    }
+  }
+
+  private generateConversationId(): string {
+    return `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  private buildToolsPrompt(tools: ToolDefinition[]): string {
+    if (tools.length === 0) return "";
+
+    // Build tool list in compact format
+    let toolList = "Tools: ";
+    toolList += tools.map(tool => {
+      if (tool.parameters && Object.keys(tool.parameters).length > 0) {
+        const params = Object.keys(tool.parameters).join(", ");
+        return `${tool.name}(${params})`;
+      }
+      return `${tool.name}()`;
+    }).join(", ");
+
+    // Build few-shot example using first tool
+    const exampleTool = tools[0];
+    let example = "";
+    if (exampleTool) {
+      const exampleArgs: Record<string, string> = {};
+      if (exampleTool.parameters) {
+        for (const [name, param] of Object.entries(exampleTool.parameters)) {
+          exampleArgs[name] = param.type === "number" ? "123" : `example_${name}`;
+        }
+      }
+      example = `\n\nExample:\nQ: Use ${exampleTool.name}\nA: {"tool": "${exampleTool.name}", "arguments": ${JSON.stringify(exampleArgs)}}`;
+    }
+
+    // Build tool descriptions
+    let descriptions = "\n\nTool descriptions:\n";
+    for (const tool of tools) {
+      descriptions += `- ${tool.name}: ${tool.description}\n`;
+    }
+
+    return `${toolList}${example}${descriptions}\nTo use a tool, output ONLY JSON. For final answer, respond normally.\n`;
+  }
+
+  private buildAgentPrompt(conversation: AgentConversation): string {
+    let prompt = "";
+
+    // System section with context and tools
+    if (conversation.context) {
+      prompt += `## Context\n${conversation.context}\n`;
+    }
+    prompt += this.buildToolsPrompt(conversation.tools);
+    prompt += "\n---\n\n";
+
+    // Conversation history
+    for (const msg of conversation.messages) {
+      if (msg.role === "user") {
+        prompt += `Human: ${msg.content}\n\n`;
+      } else if (msg.role === "assistant") {
+        prompt += `Assistant: ${msg.content}\n\n`;
+      } else if (msg.role === "tool") {
+        prompt += `Tool (${msg.tool_name}) result:\n${msg.content}\n\n`;
+      }
+    }
+
+    prompt += "Assistant:";
+    return prompt;
+  }
+
+  private parseToolCall(content: string): ToolCall | null {
+    // Strategy 1: Look for JSON in code block
+    const jsonBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (jsonBlockMatch) {
+      const parsed = this.tryParseToolJson(jsonBlockMatch[1]);
+      if (parsed) return parsed;
+    }
+
+    // Strategy 2: Look for inline JSON object with "tool" key
+    const inlineMatches = content.match(/\{[^{}]*"tool"[^{}]*\}/g);
+    if (inlineMatches) {
+      for (const match of inlineMatches) {
+        const parsed = this.tryParseToolJson(match);
+        if (parsed) return parsed;
+      }
+    }
+
+    // Strategy 3: Look for JSON object anywhere in content (more permissive)
+    const anyJsonMatch = content.match(/\{[\s\S]*?"tool"[\s\S]*?\}/);
+    if (anyJsonMatch) {
+      const parsed = this.tryParseToolJson(anyJsonMatch[0]);
+      if (parsed) return parsed;
+    }
+
+    return null;
+  }
+
+  private tryParseToolJson(jsonStr: string): ToolCall | null {
+    try {
+      // Clean up common issues
+      const cleaned = jsonStr
+        .replace(/,\s*}/g, '}')  // Remove trailing commas
+        .replace(/'/g, '"');     // Replace single quotes
+
+      const parsed = JSON.parse(cleaned);
+      if (parsed.tool && typeof parsed.tool === "string") {
+        return {
+          name: parsed.tool,
+          arguments: parsed.arguments || {}
+        };
+      }
+    } catch (e) {
+      // Not valid JSON
+    }
+    return null;
   }
 
   private setupTools() {
@@ -212,6 +376,176 @@ class LibreModelMCPServer {
           isError: true
         };
       }
+    });
+
+    // Agent chat tool with tool-calling support
+    this.server.registerTool("agent_chat", {
+      title: "Agent Chat with Tool Calling",
+      description: "Start or continue an agent conversation where the model can request tool calls. The orchestrating system (e.g., Claude) executes tools and feeds results back.",
+      inputSchema: {
+        task: z.string().describe("The task or message for the agent"),
+        tools: z.array(z.object({
+          name: z.string(),
+          description: z.string(),
+          parameters: z.record(z.object({
+            type: z.string(),
+            description: z.string().optional(),
+            required: z.boolean().optional()
+          })).optional()
+        })).default([]).describe("Tool definitions the agent can request"),
+        context: z.string().default("").describe("RAG context or background information"),
+        conversation_id: z.string().optional().describe("ID to resume an existing conversation"),
+        tool_result: z.object({
+          tool_name: z.string(),
+          result: z.string()
+        }).optional().describe("Result from a previously requested tool call"),
+        temperature: z.number().min(0.0).max(2.0).default(0.3).describe("Lower temperature for more focused agent behavior"),
+        max_tokens: z.number().min(1).max(4096).default(1024).describe("Max tokens for agent response")
+      }
+    }, async (args) => {
+      try {
+        let conversation: AgentConversation;
+
+        // Resume or create conversation
+        if (args.conversation_id && this.conversations.has(args.conversation_id)) {
+          conversation = this.conversations.get(args.conversation_id)!;
+
+          // Add tool result if provided
+          if (args.tool_result) {
+            conversation.messages.push({
+              role: "tool",
+              content: args.tool_result.result,
+              tool_name: args.tool_result.tool_name
+            });
+          } else if (args.task) {
+            // Add new user message
+            conversation.messages.push({
+              role: "user",
+              content: args.task
+            });
+          }
+        } else {
+          // Create new conversation
+          const id = args.conversation_id || this.generateConversationId();
+          conversation = {
+            id,
+            messages: [{ role: "user", content: args.task }],
+            tools: args.tools || [],
+            context: args.context || "",
+            createdAt: Date.now()
+          };
+          this.conversations.set(id, conversation);
+        }
+
+        // Build prompt and call model
+        const prompt = this.buildAgentPrompt(conversation);
+
+        const requestBody: LlamaCompletionRequest = {
+          prompt,
+          temperature: args.temperature || 0.3,
+          n_predict: args.max_tokens || 1024,
+          top_p: 0.95,
+          top_k: 40,
+          stop: ["Human:", "\nHuman:", "User:", "\nUser:"],
+          stream: false
+        };
+
+        const response = await fetch(`${this.config.url}/completion`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const data = await response.json() as LlamaCompletionResponse;
+        const content = data.content?.trim() || "";
+
+        // Add assistant response to conversation
+        conversation.messages.push({
+          role: "assistant",
+          content
+        });
+
+        // Check if model requested a tool call
+        const toolCall = this.parseToolCall(content);
+
+        if (toolCall) {
+          // Validate tool exists
+          const toolExists = conversation.tools.some(t => t.name === toolCall.name);
+
+          const agentResponse: AgentResponse = {
+            type: "tool_call",
+            conversation_id: conversation.id,
+            tool_call: toolCall,
+            tokens_used: data.tokens_predicted
+          };
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(agentResponse, null, 2)
+              }
+            ]
+          };
+        } else {
+          // Final answer - no tool call
+          const agentResponse: AgentResponse = {
+            type: "final_answer",
+            conversation_id: conversation.id,
+            content,
+            tokens_used: data.tokens_predicted
+          };
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: JSON.stringify(agentResponse, null, 2)
+              }
+            ]
+          };
+        }
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                type: "error",
+                error: error instanceof Error ? error.message : String(error)
+              }, null, 2)
+            }
+          ],
+          isError: true
+        };
+      }
+    });
+
+    // List active conversations (for debugging)
+    this.server.registerTool("list_conversations", {
+      title: "List Agent Conversations",
+      description: "List all active agent conversations (for debugging)",
+      inputSchema: {}
+    }, async () => {
+      const convs = Array.from(this.conversations.values()).map(c => ({
+        id: c.id,
+        message_count: c.messages.length,
+        tools_count: c.tools.length,
+        age_seconds: Math.round((Date.now() - c.createdAt) / 1000)
+      }));
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `**Active Conversations:** ${convs.length}\n\n\`\`\`json\n${JSON.stringify(convs, null, 2)}\n\`\`\``
+          }
+        ]
+      };
     });
   }
 
