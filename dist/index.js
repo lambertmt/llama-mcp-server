@@ -2,6 +2,95 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { exec, execSync } from "child_process";
+import { promisify } from "util";
+import fs from "fs";
+import path from "path";
+import os from "os";
+const execAsync = promisify(exec);
+function decryptGPGFile(filePath) {
+    const passphrase = process.env.GPG_PASSPHRASE;
+    if (!passphrase) {
+        console.error("GPG_PASSPHRASE env var required to decrypt", filePath);
+        return null;
+    }
+    try {
+        // Use gpg with passphrase from env var (--batch for non-interactive)
+        const result = execSync(`gpg --batch --yes --passphrase-fd 0 --decrypt "${filePath}"`, {
+            input: passphrase,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"]
+        });
+        return result;
+    }
+    catch (e) {
+        console.error(`Failed to decrypt ${filePath}:`, e);
+        return null;
+    }
+}
+function loadCredentialsFile(filePath) {
+    if (!fs.existsSync(filePath)) {
+        return null;
+    }
+    try {
+        let content;
+        if (filePath.endsWith(".gpg")) {
+            // Decrypt GPG-encrypted file
+            const decrypted = decryptGPGFile(filePath);
+            if (!decrypted)
+                return null;
+            content = decrypted;
+            console.error(`Decrypted credentials from ${filePath}`);
+        }
+        else {
+            // Plain JSON file
+            content = fs.readFileSync(filePath, "utf-8");
+        }
+        return JSON.parse(content);
+    }
+    catch (e) {
+        console.error(`Failed to load credentials from ${filePath}:`, e);
+        return null;
+    }
+}
+function loadSSHHosts() {
+    const hosts = {};
+    // Try loading from credentials file (check for .gpg first, then plain)
+    const baseCredentialsFile = process.env.CREDENTIALS_FILE || path.join(os.homedir(), ".claude", "credentials.json");
+    const gpgFile = baseCredentialsFile.endsWith(".gpg") ? baseCredentialsFile : baseCredentialsFile + ".gpg";
+    let credentialsFile = baseCredentialsFile;
+    if (fs.existsSync(gpgFile) && process.env.GPG_PASSPHRASE) {
+        credentialsFile = gpgFile; // Prefer encrypted if available and passphrase set
+    }
+    const parsed = loadCredentialsFile(credentialsFile);
+    if (parsed?.ssh_hosts) {
+        Object.assign(hosts, parsed.ssh_hosts);
+        console.error(`Loaded ${Object.keys(parsed.ssh_hosts).length} SSH hosts from ${credentialsFile}`);
+    }
+    // Try loading from SSH_HOSTS_FILE (flat format)
+    const hostsFile = process.env.SSH_HOSTS_FILE;
+    if (hostsFile) {
+        const hostsParsed = loadCredentialsFile(hostsFile);
+        if (hostsParsed) {
+            Object.assign(hosts, hostsParsed);
+        }
+    }
+    // Load from individual env vars (SSH_HOST_192_168_0_165, etc.)
+    for (const [key, value] of Object.entries(process.env)) {
+        if (key.startsWith("SSH_HOST_") && value) {
+            try {
+                const ip = key.replace("SSH_HOST_", "").replace(/_/g, ".");
+                const parsed = JSON.parse(value);
+                hosts[ip] = parsed;
+            }
+            catch (e) {
+                console.error(`Warning: Could not parse ${key}:`, e);
+            }
+        }
+    }
+    return hosts;
+}
+const SSH_HOSTS = loadSSHHosts();
 class LibreModelMCPServer {
     server;
     config;
@@ -98,23 +187,70 @@ class LibreModelMCPServer {
             if (parsed)
                 return parsed;
         }
-        // Strategy 2: Look for inline JSON object with "tool" key
-        const inlineMatches = content.match(/\{[^{}]*"tool"[^{}]*\}/g);
-        if (inlineMatches) {
-            for (const match of inlineMatches) {
-                const parsed = this.tryParseToolJson(match);
+        // Strategy 2: Extract all balanced JSON objects and check for tool calls
+        const jsonObjects = this.extractJsonObjects(content);
+        for (const jsonStr of jsonObjects) {
+            if (jsonStr.includes('"tool"')) {
+                const parsed = this.tryParseToolJson(jsonStr);
                 if (parsed)
                     return parsed;
             }
         }
-        // Strategy 3: Look for JSON object anywhere in content (more permissive)
-        const anyJsonMatch = content.match(/\{[\s\S]*?"tool"[\s\S]*?\}/);
-        if (anyJsonMatch) {
-            const parsed = this.tryParseToolJson(anyJsonMatch[0]);
-            if (parsed)
-                return parsed;
-        }
         return null;
+    }
+    extractJsonObjects(content) {
+        const results = [];
+        let i = 0;
+        while (i < content.length) {
+            if (content[i] === '{') {
+                const jsonStr = this.extractBalancedJson(content, i);
+                if (jsonStr) {
+                    results.push(jsonStr);
+                    i += jsonStr.length;
+                }
+                else {
+                    i++;
+                }
+            }
+            else {
+                i++;
+            }
+        }
+        return results;
+    }
+    extractBalancedJson(content, startIdx) {
+        if (content[startIdx] !== '{')
+            return null;
+        let depth = 0;
+        let inString = false;
+        let escape = false;
+        for (let i = startIdx; i < content.length; i++) {
+            const char = content[i];
+            if (escape) {
+                escape = false;
+                continue;
+            }
+            if (char === '\\' && inString) {
+                escape = true;
+                continue;
+            }
+            if (char === '"' && !escape) {
+                inString = !inString;
+                continue;
+            }
+            if (!inString) {
+                if (char === '{') {
+                    depth++;
+                }
+                else if (char === '}') {
+                    depth--;
+                    if (depth === 0) {
+                        return content.slice(startIdx, i + 1);
+                    }
+                }
+            }
+        }
+        return null; // Unbalanced
     }
     tryParseToolJson(jsonStr) {
         try {
@@ -273,6 +409,66 @@ class LibreModelMCPServer {
                             text: `**Health check failed:**\n❌ Cannot reach LibreModel server at ${this.config.url}\n\n**Error:** ${errorMessage}\n\n**Troubleshooting:**\n- Is llama-server running?\n- Is it listening on ${this.config.url}?\n- Check firewall/network settings`
                         }
                     ],
+                    isError: true
+                };
+            }
+        });
+        // SSH execution tool for infrastructure access
+        this.server.registerTool("ssh_exec", {
+            title: "Execute SSH Command",
+            description: "Execute a shell command on a remote server via SSH. Supports primary (.165), secondary (.13), HA (.148), Pi-hole (.239), and Proxmox (.75).",
+            inputSchema: {
+                host: z.string().describe("Server IP address (e.g., 192.168.0.165)"),
+                command: z.string().describe("Shell command to execute"),
+                timeout: z.number().min(1000).max(60000).default(30000).describe("Command timeout in ms (default: 30000)")
+            }
+        }, async (args) => {
+            try {
+                const hostConfig = SSH_HOSTS[args.host];
+                if (!hostConfig) {
+                    const knownHosts = Object.keys(SSH_HOSTS);
+                    const helpText = knownHosts.length > 0
+                        ? `Configured hosts: ${knownHosts.join(", ")}`
+                        : "No hosts configured. Set SSH_HOSTS_FILE or SSH_HOST_<IP> env vars.";
+                    return {
+                        content: [{
+                                type: "text",
+                                text: `**SSH Error:** Unknown host ${args.host}\n\n${helpText}\n\nConfigure via:\n- SSH_HOSTS_FILE=/path/to/hosts.json\n- SSH_HOST_192_168_0_1='{"user":"admin","password":"secret"}'`
+                            }],
+                        isError: true
+                    };
+                }
+                const port = hostConfig.port || 22;
+                const portArg = port !== 22 ? `-p ${port}` : "";
+                const escapedCommand = args.command.replace(/"/g, '\\"');
+                let sshCommand;
+                if (hostConfig.password) {
+                    // Use sshpass for password auth
+                    sshCommand = `sshpass -p '${hostConfig.password}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${portArg} '${hostConfig.user}'@${args.host} "${escapedCommand}"`;
+                }
+                else {
+                    // Key-based auth
+                    sshCommand = `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${portArg} '${hostConfig.user}'@${args.host} "${escapedCommand}"`;
+                }
+                const { stdout, stderr } = await execAsync(sshCommand, {
+                    timeout: args.timeout || 30000,
+                    maxBuffer: 1024 * 1024 // 1MB buffer
+                });
+                const output = stdout || stderr || "(no output)";
+                return {
+                    content: [{
+                            type: "text",
+                            text: `**SSH to ${args.host}:**\n\`\`\`\n$ ${args.command}\n${output.trim()}\n\`\`\``
+                        }]
+                };
+            }
+            catch (error) {
+                const errorMsg = error instanceof Error ? error.message : String(error);
+                return {
+                    content: [{
+                            type: "text",
+                            text: `**SSH Error on ${args.host}:**\n${errorMsg}`
+                        }],
                     isError: true
                 };
             }
