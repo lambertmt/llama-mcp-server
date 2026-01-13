@@ -239,36 +239,69 @@ class LibreModelMCPServer {
   private buildToolsPrompt(tools: ToolDefinition[]): string {
     if (tools.length === 0) return "";
 
-    // Build tool list in compact format
-    let toolList = "Tools: ";
-    toolList += tools.map(tool => {
-      if (tool.parameters && Object.keys(tool.parameters).length > 0) {
-        const params = Object.keys(tool.parameters).join(", ");
-        return `${tool.name}(${params})`;
-      }
-      return `${tool.name}()`;
-    }).join(", ");
+    let prompt = `## OUTPUT FORMAT RULES (STRICT)
 
-    // Build few-shot example using first tool
-    const exampleTool = tools[0];
-    let example = "";
-    if (exampleTool) {
-      const exampleArgs: Record<string, string> = {};
-      if (exampleTool.parameters) {
-        for (const [name, param] of Object.entries(exampleTool.parameters)) {
-          exampleArgs[name] = param.type === "number" ? "123" : `example_${name}`;
-        }
-      }
-      example = `\n\nExample:\nQ: Use ${exampleTool.name}\nA: {"tool": "${exampleTool.name}", "arguments": ${JSON.stringify(exampleArgs)}}`;
-    }
+You are an autonomous agent. Follow these rules EXACTLY:
+
+### RULE 1: Tool Calls
+When you need to use a tool, output ONLY a JSON object. Nothing else.
+Format: {"tool": "tool_name", "arguments": {"param": "value"}}
+
+CORRECT:
+{"tool": "ssh_exec", "arguments": {"host": "192.168.0.165", "command": "df -h"}}
+
+WRONG (do NOT do these):
+- Let me check... {"tool": ...}  (NO text before JSON)
+- {"tool": ...} Let me analyze  (NO text after JSON)
+- I'll use ssh_exec to check   (NO explaining, just output JSON)
+
+### RULE 2: Final Answers
+When you have enough information to answer, provide a DIRECT answer.
+Do NOT output JSON. Just write the answer clearly and concisely.
+
+CORRECT:
+The disk usage shows /dev/sda1 is at 85% capacity. This is above the 80% threshold.
+
+WRONG:
+{"answer": "The disk is at 85%"}  (NO JSON for answers)
+
+### RULE 3: After Tool Results
+When you receive tool results, either:
+- Call another tool (output JSON only)
+- Provide your final answer (plain text only)
+
+## AVAILABLE TOOLS
+
+`;
 
     // Build tool descriptions
-    let descriptions = "\n\nTool descriptions:\n";
     for (const tool of tools) {
-      descriptions += `- ${tool.name}: ${tool.description}\n`;
+      prompt += `### ${tool.name}\n`;
+      prompt += `${tool.description}\n`;
+      if (tool.parameters && Object.keys(tool.parameters).length > 0) {
+        prompt += `Parameters:\n`;
+        for (const [name, param] of Object.entries(tool.parameters)) {
+          const required = param.required ? "(required)" : "(optional)";
+          prompt += `  - ${name}: ${param.type} ${required}${param.description ? ` - ${param.description}` : ""}\n`;
+        }
+      }
+      prompt += `\n`;
     }
 
-    return `${toolList}${example}${descriptions}\nTo use a tool, output ONLY JSON. For final answer, respond normally.\n`;
+    // Add example
+    const exampleTool = tools.find(t => t.name === "ssh_exec") || tools[0];
+    if (exampleTool) {
+      prompt += `## EXAMPLE INTERACTION
+
+User: Check the uptime on 192.168.0.165
+Assistant: {"tool": "ssh_exec", "arguments": {"host": "192.168.0.165", "command": "uptime"}}
+Tool result: 16:30:00 up 5 days, 3:22, 2 users, load average: 0.15, 0.10, 0.08
+Assistant: The server 192.168.0.165 has been running for 5 days and 3 hours. Current load is low (0.15).
+
+`;
+    }
+
+    return prompt;
   }
 
   private buildAgentPrompt(conversation: AgentConversation): string {
@@ -304,6 +337,35 @@ class LibreModelMCPServer {
       } else {
         console.error(`[${timestamp}] [MCP] ${msg}`);
       }
+    }
+  }
+
+  private async executeSSHCommand(host: string, command: string): Promise<string> {
+    const hostConfig = SSH_HOSTS[host];
+    if (!hostConfig) {
+      return `Error: Unknown host ${host}. Available: ${Object.keys(SSH_HOSTS).join(", ")}`;
+    }
+
+    try {
+      const port = hostConfig.port || 22;
+      const portArg = port !== 22 ? `-p ${port}` : "";
+      const escapedCommand = command.replace(/"/g, '\\"');
+
+      let sshCommand: string;
+      if (hostConfig.password) {
+        sshCommand = `sshpass -p '${hostConfig.password}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${portArg} '${hostConfig.user}'@${host} "${escapedCommand}"`;
+      } else {
+        sshCommand = `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${portArg} '${hostConfig.user}'@${host} "${escapedCommand}"`;
+      }
+
+      const { stdout, stderr } = await execAsync(sshCommand, {
+        timeout: 30000,
+        maxBuffer: 1024 * 1024
+      });
+
+      return stdout || stderr || "(no output)";
+    } catch (error) {
+      return `Error: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
 
@@ -641,7 +703,7 @@ class LibreModelMCPServer {
       }
     });
 
-    // Agent chat tool with tool-calling support
+    // Agent chat tool with tool-calling support and autonomous execution
     this.server.registerTool("agent_chat", {
       title: "Agent Chat with Tool Calling",
       description: "Start or continue an agent conversation where the model can request tool calls. The orchestrating system (e.g., Claude) executes tools and feeds results back.",
@@ -663,7 +725,8 @@ class LibreModelMCPServer {
           result: z.string()
         }).optional().describe("Result from a previously requested tool call"),
         temperature: z.number().min(0.0).max(2.0).default(0.3).describe("Lower temperature for more focused agent behavior"),
-        max_tokens: z.number().min(1).max(4096).default(1024).describe("Max tokens for agent response")
+        auto_execute: z.boolean().default(true).describe("Auto-execute built-in tools (ssh_exec) without returning to caller"),
+        max_iterations: z.number().min(1).max(20).default(10).describe("Max tool execution iterations before returning")
       }
     }, async (args) => {
       try {
@@ -671,7 +734,8 @@ class LibreModelMCPServer {
           task: args.task?.slice(0, 100),
           conversation_id: args.conversation_id,
           tools: args.tools?.map(t => t.name),
-          has_tool_result: !!args.tool_result
+          has_tool_result: !!args.tool_result,
+          auto_execute: args.auto_execute
         });
 
         let conversation: AgentConversation;
@@ -681,7 +745,7 @@ class LibreModelMCPServer {
           conversation = this.conversations.get(args.conversation_id)!;
           this.debug("Resuming conversation", conversation.id);
 
-          // Add tool result if provided
+          // Add tool result if provided (for manual tool execution mode)
           if (args.tool_result) {
             this.debug("Adding tool result", { tool: args.tool_result.tool_name, result_length: args.tool_result.result.length });
             conversation.messages.push({
@@ -690,115 +754,179 @@ class LibreModelMCPServer {
               tool_name: args.tool_result.tool_name
             });
           } else if (args.task) {
-            // Add new user message
             conversation.messages.push({
               role: "user",
               content: args.task
             });
           }
         } else {
-          // Create new conversation
+          // Create new conversation with ssh_exec as built-in tool
           const id = args.conversation_id || this.generateConversationId();
           this.debug("Creating new conversation", id);
+
+          // Add ssh_exec as built-in tool if not already provided
+          const providedTools = args.tools || [];
+          const hasSSH = providedTools.some(t => t.name === "ssh_exec");
+          const allTools = hasSSH ? providedTools : [
+            ...providedTools,
+            {
+              name: "ssh_exec",
+              description: "Execute a shell command on a remote server via SSH. Available hosts: " + Object.keys(SSH_HOSTS).join(", "),
+              parameters: {
+                host: { type: "string", description: "Server IP address", required: true },
+                command: { type: "string", description: "Shell command to execute", required: true }
+              }
+            }
+          ];
+
           conversation = {
             id,
             messages: [{ role: "user", content: args.task }],
-            tools: args.tools || [],
+            tools: allTools,
             context: args.context || "",
             createdAt: Date.now()
           };
           this.conversations.set(id, conversation);
         }
 
-        // Build prompt and call model
-        const prompt = this.buildAgentPrompt(conversation);
-        this.debug("Built prompt (last 500 chars)", prompt.slice(-500));
+        // Agentic loop - execute tools until final answer or max iterations
+        const autoExecute = args.auto_execute !== false;
+        const maxIterations = args.max_iterations || 5;
+        let totalTokens = 0;
+        let toolsExecuted: Array<{ tool: string; args: any; result_length: number }> = [];
 
-        const requestBody: LlamaCompletionRequest = {
-          prompt,
-          temperature: args.temperature || 0.3,
-          n_predict: args.max_tokens || 1024,
-          top_p: 0.95,
-          top_k: 40,
-          stop: ["Human:", "\nHuman:", "User:", "\nUser:"],
-          stream: false
+        for (let iteration = 0; iteration < maxIterations; iteration++) {
+          this.debug(`Agentic loop iteration ${iteration + 1}/${maxIterations}`);
+
+          // Build prompt and call model
+          const prompt = this.buildAgentPrompt(conversation);
+
+          const requestBody: LlamaCompletionRequest = {
+            prompt,
+            temperature: args.temperature || 0.3,
+            n_predict: -1,  // Unlimited - local tokens are free
+            top_p: 0.95,
+            top_k: 40,
+            stop: ["Human:", "\nHuman:", "User:", "\nUser:"],
+            stream: false
+          };
+
+          this.debug("Calling LLM", { iteration: iteration + 1 });
+          const response = await fetch(`${this.config.url}/completion`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestBody)
+          });
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+
+          const data = await response.json() as LlamaCompletionResponse;
+          const content = data.content?.trim() || "";
+          totalTokens += data.tokens_predicted || 0;
+          this.debug("LLM response", { tokens: data.tokens_predicted, total: totalTokens });
+
+          // Add assistant response to conversation
+          conversation.messages.push({
+            role: "assistant",
+            content
+          });
+
+          // Check if model requested a tool call
+          const toolCall = this.parseToolCall(content);
+
+          if (toolCall) {
+            this.debug("Tool call detected", { tool: toolCall.name, args: toolCall.arguments });
+
+            // Check if we can auto-execute this tool
+            const isBuiltIn = toolCall.name === "ssh_exec";
+
+            if (autoExecute && isBuiltIn) {
+              // Execute ssh_exec internally
+              this.debug("Auto-executing ssh_exec");
+              const result = await this.executeSSHCommand(
+                toolCall.arguments.host as string,
+                toolCall.arguments.command as string
+              );
+
+              toolsExecuted.push({
+                tool: toolCall.name,
+                args: toolCall.arguments,
+                result_length: result.length
+              });
+
+              // Add tool result to conversation and continue loop
+              conversation.messages.push({
+                role: "tool",
+                content: result,
+                tool_name: toolCall.name
+              });
+              this.debug("Tool result added, continuing loop");
+              continue; // Continue to next iteration
+            } else {
+              // Return tool call to caller for manual execution
+              const agentResponse: AgentResponse = {
+                type: "tool_call",
+                conversation_id: conversation.id,
+                tool_call: toolCall,
+                tokens_used: totalTokens
+              };
+
+              return {
+                content: [{
+                  type: "text",
+                  text: JSON.stringify(agentResponse, null, 2)
+                }]
+              };
+            }
+          } else {
+            // Final answer - no tool call
+            this.debug("Final answer reached", { iterations: iteration + 1, tools_executed: toolsExecuted.length });
+
+            const agentResponse: AgentResponse & { tools_executed?: typeof toolsExecuted } = {
+              type: "final_answer",
+              conversation_id: conversation.id,
+              content,
+              tokens_used: totalTokens
+            };
+
+            if (toolsExecuted.length > 0) {
+              agentResponse.tools_executed = toolsExecuted;
+            }
+
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify(agentResponse, null, 2)
+              }]
+            };
+          }
+        }
+
+        // Max iterations reached
+        this.debug("Max iterations reached", { iterations: maxIterations });
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              type: "max_iterations",
+              conversation_id: conversation.id,
+              message: `Reached max iterations (${maxIterations}) without final answer`,
+              tools_executed: toolsExecuted,
+              tokens_used: totalTokens
+            }, null, 2)
+          }]
         };
-
-        this.debug("Calling LLM", { url: this.config.url, max_tokens: requestBody.n_predict });
-        const response = await fetch(`${this.config.url}/completion`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestBody)
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-        }
-
-        const data = await response.json() as LlamaCompletionResponse;
-        const content = data.content?.trim() || "";
-        this.debug("LLM response", { tokens: data.tokens_predicted, content_length: content.length });
-        this.debug("LLM content", content);
-
-        // Add assistant response to conversation
-        conversation.messages.push({
-          role: "assistant",
-          content
-        });
-
-        // Check if model requested a tool call
-        const toolCall = this.parseToolCall(content);
-
-        if (toolCall) {
-          // Validate tool exists
-          const toolExists = conversation.tools.some(t => t.name === toolCall.name);
-          this.debug("Tool call detected", { tool: toolCall.name, exists: toolExists, args: toolCall.arguments });
-
-          const agentResponse: AgentResponse = {
-            type: "tool_call",
-            conversation_id: conversation.id,
-            tool_call: toolCall,
-            tokens_used: data.tokens_predicted
-          };
-
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(agentResponse, null, 2)
-              }
-            ]
-          };
-        } else {
-          // Final answer - no tool call
-          this.debug("Final answer (no tool call detected)");
-          const agentResponse: AgentResponse = {
-            type: "final_answer",
-            conversation_id: conversation.id,
-            content,
-            tokens_used: data.tokens_predicted
-          };
-
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(agentResponse, null, 2)
-              }
-            ]
-          };
-        }
       } catch (error) {
         return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify({
-                type: "error",
-                error: error instanceof Error ? error.message : String(error)
-              }, null, 2)
-            }
-          ],
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              type: "error",
+              error: error instanceof Error ? error.message : String(error)
+            }, null, 2)
+          }],
           isError: true
         };
       }
