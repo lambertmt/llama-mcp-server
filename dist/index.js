@@ -179,23 +179,46 @@ class LibreModelMCPServer {
         prompt += "Assistant:";
         return prompt;
     }
+    debug(msg, data) {
+        if (process.env.DEBUG_MCP) {
+            const timestamp = new Date().toISOString();
+            if (data !== undefined) {
+                console.error(`[${timestamp}] [MCP] ${msg}:`, typeof data === 'string' ? data : JSON.stringify(data, null, 2));
+            }
+            else {
+                console.error(`[${timestamp}] [MCP] ${msg}`);
+            }
+        }
+    }
     parseToolCall(content) {
+        this.debug("parseToolCall input (first 500 chars)", content.slice(0, 500));
         // Strategy 1: Look for JSON in code block
         const jsonBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
         if (jsonBlockMatch) {
+            this.debug("Found JSON code block", jsonBlockMatch[1]);
             const parsed = this.tryParseToolJson(jsonBlockMatch[1]);
-            if (parsed)
+            if (parsed) {
+                this.debug("Parsed tool call from code block", parsed);
                 return parsed;
+            }
         }
         // Strategy 2: Extract all balanced JSON objects and check for tool calls
         const jsonObjects = this.extractJsonObjects(content);
+        this.debug(`Found ${jsonObjects.length} JSON objects`);
         for (const jsonStr of jsonObjects) {
             if (jsonStr.includes('"tool"')) {
+                this.debug("Attempting to parse JSON with 'tool' key", jsonStr);
                 const parsed = this.tryParseToolJson(jsonStr);
-                if (parsed)
+                if (parsed) {
+                    this.debug("Successfully parsed tool call", parsed);
                     return parsed;
+                }
+                else {
+                    this.debug("Failed to parse as tool call");
+                }
             }
         }
+        this.debug("No tool call found in content");
         return null;
     }
     extractJsonObjects(content) {
@@ -253,21 +276,26 @@ class LibreModelMCPServer {
         return null; // Unbalanced
     }
     tryParseToolJson(jsonStr) {
-        try {
-            // Clean up common issues
-            const cleaned = jsonStr
-                .replace(/,\s*}/g, '}') // Remove trailing commas
-                .replace(/'/g, '"'); // Replace single quotes
-            const parsed = JSON.parse(cleaned);
-            if (parsed.tool && typeof parsed.tool === "string") {
-                return {
-                    name: parsed.tool,
-                    arguments: parsed.arguments || {}
-                };
+        // Try parsing strategies in order of safety
+        const strategies = [
+            jsonStr, // Try as-is first
+            jsonStr.replace(/,\s*}/g, '}'), // Fix trailing commas
+            jsonStr.replace(/,\s*}/g, '}') // Fix trailing commas in arrays too
+                .replace(/,\s*\]/g, ']'),
+        ];
+        for (const attempt of strategies) {
+            try {
+                const parsed = JSON.parse(attempt);
+                if (parsed.tool && typeof parsed.tool === "string") {
+                    return {
+                        name: parsed.tool,
+                        arguments: parsed.arguments || {}
+                    };
+                }
             }
-        }
-        catch (e) {
-            // Not valid JSON
+            catch (e) {
+                // Try next strategy
+            }
         }
         return null;
     }
@@ -499,12 +527,20 @@ class LibreModelMCPServer {
             }
         }, async (args) => {
             try {
+                this.debug("agent_chat called", {
+                    task: args.task?.slice(0, 100),
+                    conversation_id: args.conversation_id,
+                    tools: args.tools?.map(t => t.name),
+                    has_tool_result: !!args.tool_result
+                });
                 let conversation;
                 // Resume or create conversation
                 if (args.conversation_id && this.conversations.has(args.conversation_id)) {
                     conversation = this.conversations.get(args.conversation_id);
+                    this.debug("Resuming conversation", conversation.id);
                     // Add tool result if provided
                     if (args.tool_result) {
+                        this.debug("Adding tool result", { tool: args.tool_result.tool_name, result_length: args.tool_result.result.length });
                         conversation.messages.push({
                             role: "tool",
                             content: args.tool_result.result,
@@ -522,6 +558,7 @@ class LibreModelMCPServer {
                 else {
                     // Create new conversation
                     const id = args.conversation_id || this.generateConversationId();
+                    this.debug("Creating new conversation", id);
                     conversation = {
                         id,
                         messages: [{ role: "user", content: args.task }],
@@ -533,6 +570,7 @@ class LibreModelMCPServer {
                 }
                 // Build prompt and call model
                 const prompt = this.buildAgentPrompt(conversation);
+                this.debug("Built prompt (last 500 chars)", prompt.slice(-500));
                 const requestBody = {
                     prompt,
                     temperature: args.temperature || 0.3,
@@ -542,6 +580,7 @@ class LibreModelMCPServer {
                     stop: ["Human:", "\nHuman:", "User:", "\nUser:"],
                     stream: false
                 };
+                this.debug("Calling LLM", { url: this.config.url, max_tokens: requestBody.n_predict });
                 const response = await fetch(`${this.config.url}/completion`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -552,6 +591,8 @@ class LibreModelMCPServer {
                 }
                 const data = await response.json();
                 const content = data.content?.trim() || "";
+                this.debug("LLM response", { tokens: data.tokens_predicted, content_length: content.length });
+                this.debug("LLM content", content);
                 // Add assistant response to conversation
                 conversation.messages.push({
                     role: "assistant",
@@ -562,6 +603,7 @@ class LibreModelMCPServer {
                 if (toolCall) {
                     // Validate tool exists
                     const toolExists = conversation.tools.some(t => t.name === toolCall.name);
+                    this.debug("Tool call detected", { tool: toolCall.name, exists: toolExists, args: toolCall.arguments });
                     const agentResponse = {
                         type: "tool_call",
                         conversation_id: conversation.id,
@@ -579,6 +621,7 @@ class LibreModelMCPServer {
                 }
                 else {
                     // Final answer - no tool call
+                    this.debug("Final answer (no tool call detected)");
                     const agentResponse = {
                         type: "final_answer",
                         conversation_id: conversation.id,
