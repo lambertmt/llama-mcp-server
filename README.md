@@ -5,7 +5,7 @@ A Model Context Protocol (MCP) server that bridges Claude Desktop/Claude Code wi
 ## Features
 
 - **Autonomous agent execution** - local LLM executes tools directly, no Claude middleman
-- **Massive Claude token savings** - 70-90% reduction on analysis tasks
+- **Massive Claude token savings** - 40-80% reduction on analysis tasks
 - **Built-in SSH execution** - agent can run commands on remote servers
 - **Full conversation support** with local LLMs through Claude
 - **GPG-encrypted credentials** - secure SSH host configuration
@@ -15,16 +15,34 @@ A Model Context Protocol (MCP) server that bridges Claude Desktop/Claude Code wi
 
 When Claude analyzes large outputs (logs, disk usage, etc.), every character burns API tokens. This MCP server offloads that work to your **free local LLM**.
 
+### How the Token Math Works
+
+**Claude Direct** (no agent) - system health check example:
+- Raw SSH output: ~15,000 chars ≈ 3,500-4,000 tokens
+- Conversation overhead: ~1,500 tokens
+- **Total Claude tokens: ~5,500**
+
+**Claude w/ Agent** - same task:
+- Task request to agent: ~100 tokens
+- Agent's summary response: ~1,000-1,500 tokens
+- Claude's final response: ~300 tokens
+- **Total Claude tokens: ~1,500**
+
+**Local LLM** (inside agent, FREE):
+- Processes ~15,000 chars raw output: ~4,000 tokens
+- Analysis and formatting: ~1,000 tokens
+- **Total local tokens: ~5,000**
+
+The total work is similar, but the **Claude API tokens** (what you pay for) drop significantly because raw data never touches Claude's context.
+
 ### Actual Test Results
 
-| Task | Claude Direct | With Autonomous Agent | Savings |
-|------|---------------|----------------------|---------|
-| Simple query (hostname) | ~500 tokens | ~300 tokens | 40% |
-| Disk analysis | ~800 tokens | ~400 tokens | 50% |
-| **Log analysis (200 lines)** | **~15,000 tokens** | **~1,500 tokens** | **90%** |
-| **System health check** | **~15,000 tokens** | **~4,500 tokens** | **70%** |
-
-**Key insight**: Raw data (logs, command output) never touches Claude's context. Only the local LLM's analysis is returned.
+| Task | Claude Direct | Claude w/ Agent | Local Tokens | Savings |
+|------|---------------|-----------------|--------------|---------|
+| Simple query (hostname) | ~500 | ~300 | ~250 | 40% |
+| Disk analysis | ~1,500 | ~500 | ~800 | 65% |
+| **Log analysis (200 lines)** | **~4,000** | **~800** | ~4,500 | **80%** |
+| **System health check** | **~5,500** | **~1,500** | ~5,000 | **73%** |
 
 ### Real Test: System Health Check
 
@@ -34,9 +52,10 @@ Task: "Check disk usage, memory, load average, and recent errors on 192.168.0.16
 Agent internally executed:
   - ssh_exec: "df -h; free -m; uptime; journalctl -p err -n 100"
   - Raw output: 15,168 characters (Claude NEVER saw this)
-  - Local LLM tokens: 2,070 (free)
+  - Local LLM tokens: ~5,000 (free)
 
-Claude received: Formatted health report (~4,500 chars)
+Claude received: Formatted health report (~1,500 tokens)
+Savings: 73% reduction in Claude API tokens
 ```
 
 ## Installation
@@ -241,10 +260,10 @@ Tested with GPT-OSS 120B (Q8) on AMD Strix Halo, 128K context:
 
 | Scenario | Time | Claude Tokens | Local Tokens |
 |----------|------|---------------|--------------|
-| Log analysis (Claude direct) | 27s | ~15,000 | 0 |
-| Log analysis (autonomous agent) | 23s | ~1,500 | 2,070 |
+| Log analysis (Claude direct) | 27s | ~4,000 | 0 |
+| Log analysis (autonomous agent) | 23s | ~800 | ~4,500 |
 
-**Result**: Similar speed, 90% Claude token reduction.
+**Result**: Similar speed, 80% Claude token reduction. Local tokens are free.
 
 ## Troubleshooting
 
