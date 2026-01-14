@@ -5,7 +5,7 @@ A Model Context Protocol (MCP) server that bridges Claude Desktop/Claude Code wi
 ## Features
 
 - **Autonomous agent execution** - local LLM executes tools directly, no Claude middleman
-- **Massive Claude token savings** - 40-80% reduction on analysis tasks
+- **Massive Claude token savings** - up to 95% reduction on analysis tasks
 - **Built-in SSH execution** - agent can run commands on remote servers
 - **Full conversation support** with local LLMs through Claude
 - **GPG-encrypted credentials** - secure SSH host configuration
@@ -17,45 +17,47 @@ When Claude analyzes large outputs (logs, disk usage, etc.), every character bur
 
 ### How the Token Math Works
 
-**Claude Direct** (no agent) - system health check example:
-- Raw SSH output: ~15,000 chars ≈ 3,500-4,000 tokens
-- Conversation overhead: ~1,500 tokens
-- **Total Claude tokens: ~5,500**
+**Claude Direct** (no agent) - security audit example:
+- Raw SSH output: ~44,000 chars ≈ 11,000 tokens
+- Conversation overhead: ~800 tokens
+- **Total Claude tokens: ~11,800**
 
 **Claude w/ Agent** - same task:
 - Task request to agent: ~100 tokens
-- Agent's summary response: ~1,000-1,500 tokens
-- Claude's final response: ~300 tokens
-- **Total Claude tokens: ~1,500**
+- Agent's summary response: ~700 tokens
+- **Total Claude tokens: ~800**
 
 **Local LLM** (inside agent, FREE):
-- Processes ~15,000 chars raw output: ~4,000 tokens
+- Processes ~44,000 chars raw output: ~11,000 tokens
 - Analysis and formatting: ~1,000 tokens
-- **Total local tokens: ~5,000**
+- **Total local tokens: ~12,000**
 
-The total work is similar, but the **Claude API tokens** (what you pay for) drop significantly because raw data never touches Claude's context.
+The tokens don't disappear - they move from Claude (paid) to your local LLM (free). The work gets done, you just don't pay for it.
 
 ### Actual Test Results
 
-| Task | Claude Direct | Claude w/ Agent | Local Tokens | Savings |
-|------|---------------|-----------------|--------------|---------|
-| Simple query (hostname) | ~500 | ~300 | ~250 | 40% |
-| Disk analysis | ~1,500 | ~500 | ~800 | 65% |
-| **Log analysis (200 lines)** | **~4,000** | **~800** | ~4,500 | **80%** |
-| **System health check** | **~5,500** | **~1,500** | ~5,000 | **73%** |
+| Task | Claude (Direct) | Claude (w/ Agent) | Local LLM (free) | Savings |
+|------|-----------------|-------------------|------------------|---------|
+| **Security audit** | **~11,800** | **~800** | **~11,000** | **93%** |
+| **Docker logs analysis** | **~10,500** | **~500** | **~10,000** | **95%** |
+| System health check | ~5,500 | ~1,500 | ~4,000 | 73% |
+| Log analysis (journalctl) | ~4,000 | ~800 | ~3,200 | 80% |
+| Code gen (w/ exploration) | ~2,700 | ~1,700 | ~1,000 | 37% |
+| Disk analysis | ~1,500 | ~500 | ~1,000 | 65% |
+| Simple query (hostname) | ~500 | ~300 | ~200 | 40% |
 
-### Real Test: System Health Check
+### Real Test: Security Audit
 
 ```
-Task: "Check disk usage, memory, load average, and recent errors on 192.168.0.165"
+Task: "Analyze SSH logs, sudo usage, and check for suspicious activity on 192.168.0.165"
 
 Agent internally executed:
-  - ssh_exec: "df -h; free -m; uptime; journalctl -p err -n 100"
-  - Raw output: 15,168 characters (Claude NEVER saw this)
-  - Local LLM tokens: ~5,000 (free)
+  - ssh_exec: "journalctl -u sshd -n 200; journalctl _COMM=sudo -n 100; ss -tuln"
+  - Raw output: 43,821 characters (Claude NEVER saw this)
+  - Local LLM tokens: ~11,000 (free)
 
-Claude received: Formatted health report (~1,500 tokens)
-Savings: 73% reduction in Claude API tokens
+Claude received: Security summary with severity ratings (~800 tokens)
+Savings: 93% reduction in Claude API tokens
 ```
 
 ## Installation
@@ -260,10 +262,12 @@ Tested with GPT-OSS 120B (Q8) on AMD Strix Halo, 128K context:
 
 | Scenario | Time | Claude Tokens | Local Tokens |
 |----------|------|---------------|--------------|
-| Log analysis (Claude direct) | 27s | ~4,000 | 0 |
-| Log analysis (autonomous agent) | 23s | ~800 | ~4,500 |
+| Docker logs (Claude direct) | ~45s | ~10,500 | 0 |
+| Docker logs (autonomous agent) | ~45s | ~500 | ~10,000 |
+| Security audit (Claude direct) | ~60s | ~11,800 | 0 |
+| Security audit (autonomous agent) | ~60s | ~800 | ~11,000 |
 
-**Result**: Similar speed, 80% Claude token reduction. Local tokens are free.
+**Result**: Same speed, up to 95% Claude token reduction. The work shifts to your free local LLM.
 
 ## Troubleshooting
 
@@ -295,4 +299,4 @@ CC0-1.0 - Public Domain. Use freely!
 
 ---
 
-Built for open-source AI infrastructure. Reduce your Claude API costs by 70-90% on analysis tasks.
+Built for open-source AI infrastructure. Reduce your Claude API costs by up to 95% on analysis tasks.

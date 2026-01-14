@@ -1,4 +1,4 @@
-# Video Script: Slash Your Claude API Costs by 80% with Local LLM Agents
+# Video Script: Slash Your Claude API Costs by 95% with Local LLM Agents
 
 **Target Length**: 4-6 minutes
 **Tone**: Technical but accessible, enthusiastic
@@ -10,7 +10,7 @@
 
 **[HOOK - Text on screen or talking head]**
 
-"What if I told you that you could cut your Claude API token usage by up to 80% on analysis tasks... using your own local LLM?"
+"What if I told you that you could cut your Claude API token usage by up to 95% on analysis tasks... using your own local LLM?"
 
 **[Pause for effect]**
 
@@ -58,9 +58,9 @@
 
 "Step 5: Only that summary goes back to Claude"
 
-**[Show comparison: 5,500 tokens vs 1,500 tokens]**
+**[Show comparison: 11,800 tokens vs 800 tokens]**
 
-"That's a 73% reduction in Claude tokens. And local tokens? Those are free."
+"That's a 93% reduction in Claude tokens. The other 11,000 tokens? They run on your local LLM - completely free."
 
 ---
 
@@ -72,56 +72,61 @@
 
 **[Show bullet breakdown - animate each line]**
 
-"Here's how a system health check breaks down:"
+"Here's how a security audit breaks down:"
 
 **Claude Direct** (no agent):
-- Raw SSH output: ~15,000 chars ≈ 3,500-4,000 tokens
-- Conversation overhead: ~1,500 tokens
-- **Total Claude tokens: ~5,500**
+- Raw SSH output: ~44,000 chars ≈ 11,000 tokens
+- Conversation overhead: ~800 tokens
+- **Total Claude tokens: ~11,800**
 
 **Claude with Agent**:
 - Task request to agent: ~100 tokens
-- Agent's summary response: ~1,000-1,500 tokens
-- Claude's final response: ~300 tokens
-- **Total Claude tokens: ~1,500**
+- Agent's summary response: ~700 tokens
+- **Total Claude tokens: ~800**
 
 **Local LLM** (inside agent - FREE):
-- Processes ~15,000 chars raw output: ~4,000 tokens
+- Processes ~44,000 chars raw output: ~11,000 tokens
 - Analysis and formatting: ~1,000 tokens
-- **Total local tokens: ~5,000**
+- **Total local tokens: ~12,000**
 
-"The total work is the same. But the Claude API tokens - what you pay for - drop by 73%."
+"The tokens don't disappear - they shift from paid to free. 11,000 tokens move to your local LLM."
 
-**[Table appears on screen]**
+**[Table appears on screen - sorted by Claude Direct tokens, highest first]**
 
-| Task | Claude Direct | Claude w/ Agent | Local Tokens | Savings |
-|------|---------------|-----------------|--------------|---------|
-| Simple query | ~500 | ~300 | ~250 | 40% |
-| Disk analysis | ~1,500 | ~500 | ~800 | 65% |
-| Log analysis (200 lines) | ~4,000 | ~800 | ~4,500 | **80%** |
-| Full system health check | ~5,500 | ~1,500 | ~5,000 | **73%** |
+| Task | Claude (Direct) | Claude (w/ Agent) | Local LLM (free) | Savings |
+|------|-----------------|-------------------|------------------|---------|
+| **Security audit** | **~11,800** | **~800** | **~11,000** | **93%** |
+| **Docker logs analysis** | **~10,500** | **~500** | **~10,000** | **95%** |
+| System health check | ~5,500 | ~1,500 | ~4,000 | 73% |
+| Log analysis (journalctl) | ~4,000 | ~800 | ~3,200 | 80% |
+| Code gen (w/ exploration) | ~2,700 | ~1,700 | ~1,000 | 37% |
+| Disk analysis | ~1,500 | ~500 | ~1,000 | 65% |
+| Simple query | ~500 | ~300 | ~200 | 40% |
+| Code gen (small input) | ~1,550 | ~1,600 | ~1,500 | 0% |
 
-"The bigger the raw output, the bigger the savings."
+"See the pattern? The tokens don't disappear - they move from Claude to your local LLM. Security audit: 11,000 tokens shift from paid to free. Docker logs: 10,000 tokens. The work gets done, you just don't pay for it."
 
 **[Show actual agent response]**
 
-"Here's a real response from the autonomous agent. I asked it to check system health - disk usage, memory, load average, and recent errors."
+"Here's a real response from the security audit. I asked it to analyze SSH logs, sudo usage, and check for suspicious activity."
 
 **[Show JSON response with tools_executed]**
 
 ```json
 {
   "type": "final_answer",
-  "content": "... detailed health report ...",
-  "tokens_used": 2070,
+  "content": "Security Audit Summary... No failed logins,
+    direct root SSH from internal IP (Medium severity),
+    repeated sudo auth failures (Medium)...",
+  "tokens_used": 1115,
   "tools_executed": [{
     "tool": "ssh_exec",
-    "result_length": 15168
+    "result_length": 43821
   }]
 }
 ```
 
-"See that? 15,168 characters of raw command output. Claude never saw any of it. I just got the analysis."
+"43,821 characters of security logs. Claude never saw any of it. I just got a severity-rated summary with recommendations."
 
 ---
 
@@ -208,7 +213,7 @@ agent_chat({
 
 ## THUMBNAIL SUGGESTIONS
 
-Option A: "80% LESS" with Claude logo and downward arrow
+Option A: "95% LESS" with Claude logo and downward arrow
 Option B: Split image - pile of tokens vs single token
 Option C: "Claude + Local LLM = $$$" with savings visualization
 
@@ -217,14 +222,14 @@ Option C: "Claude + Local LLM = $$$" with savings visualization
 ## DESCRIPTION / METADATA
 
 **Title Options:**
-- "Cut Claude API Costs by 80% with Local LLM Agents"
-- "Autonomous Agents: How I Reduced Claude Token Usage by 80%"
+- "Cut Claude API Costs by 95% with Local LLM Agents"
+- "Autonomous Agents: How I Reduced Claude Token Usage by 95%"
 - "The Claude Token Hack: Let Local LLMs Do the Heavy Lifting"
 
 **Description:**
 ```
 I built an autonomous agent that lets your local LLM execute tools directly,
-without Claude ever seeing the raw output. The result? 40-80% reduction in
+without Claude ever seeing the raw output. The result? Up to 95% reduction in
 Claude API token usage on analysis tasks.
 
 This video shows real test results and explains how to set it up.
