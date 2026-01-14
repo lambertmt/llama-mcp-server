@@ -1,22 +1,26 @@
-# Video Script: Slash Your Claude API Costs by 95% with Local LLM Agents
+# Video Script: Local LLM Delegation for Infrastructure Debugging - Real Token Measurements
 
-**Target Length**: 4-6 minutes
-**Tone**: Technical but accessible, enthusiastic
+**Target Length**: 5-7 minutes
+**Tone**: Technical, honest, practical
 **Audience**: Claude Code users, AI developers, home lab enthusiasts
 
 ---
 
-## INTRO (0:00 - 0:30)
+## INTRO (0:00 - 0:45)
 
 **[HOOK - Text on screen or talking head]**
 
-"What if I told you that you could cut your Claude API token usage by up to 95% on analysis tasks... using your own local LLM?"
+"I saved 52,000 Claude tokens on a single debugging session by delegating work to my local LLM."
 
-**[Pause for effect]**
+**[Pause]**
 
-"I'm not talking about replacing Claude. I'm talking about making Claude smarter by letting it delegate the heavy lifting to a local model running on your own hardware."
+"Now, this pattern isn't new. Projects like CC Token Saver, Ollama Claude, and Rubber Duck MCP have been doing local LLM delegation for a while."
 
-"Let me show you exactly how this works, with real numbers from actual tests."
+**[Show logos/links of prior art]**
+
+"What I built is an implementation focused on infrastructure debugging - with built-in SSH execution and detailed token measurements. If you're doing DevOps work with Claude Code, this might be useful."
+
+"Let me show you the actual numbers."
 
 ---
 
@@ -95,16 +99,17 @@
 
 | Task | Claude (Direct) | Claude (w/ Agent) | Local LLM (free) | Savings |
 |------|-----------------|-------------------|------------------|---------|
+| **Debugging workflow (7 calls)** | **~56,000** | **~4,100** | **~35,000** | **93%** |
 | **Security audit** | **~11,800** | **~800** | **~11,000** | **93%** |
 | **Docker logs analysis** | **~10,500** | **~500** | **~10,000** | **95%** |
 | System health check | ~5,500 | ~1,500 | ~4,000 | 73% |
 | Log analysis (journalctl) | ~4,000 | ~800 | ~3,200 | 80% |
 | Code gen (w/ exploration) | ~2,700 | ~1,700 | ~1,000 | 37% |
 | Disk analysis | ~1,500 | ~500 | ~1,000 | 65% |
-| Simple query | ~500 | ~300 | ~200 | 40% |
 | Code gen (small input) | ~1,550 | ~1,600 | ~1,500 | 0% |
+| Simple query | ~500 | ~300 | ~200 | 40% |
 
-"See the pattern? The tokens don't disappear - they move from Claude to your local LLM. Security audit: 11,000 tokens shift from paid to free. Docker logs: 10,000 tokens. The work gets done, you just don't pay for it."
+"See the pattern? The tokens shift from Claude to your local LLM. Big raw data = big savings. But notice code gen with small inputs - zero savings. The output size dominates, so no benefit there. This works best when you're processing large amounts of data."
 
 **[Show actual agent response]**
 
@@ -130,7 +135,58 @@
 
 ---
 
-## HOW IT WORKS (3:30 - 4:30)
+## REAL-WORLD DEBUGGING (3:30 - 4:30)
+
+**[Show Nextcloud Talk error message]**
+
+"But here's where it gets really powerful. Let me show you a real debugging session."
+
+"Nextcloud Talk was returning HTTP 400 errors. Instead of me manually SSHing around and copying logs into Claude, I used the agent."
+
+**[Show orchestration diagram]**
+
+```
+Claude Code (Orchestrator)          Local LLM Agent (Executor)
+        │                                    │
+        │  "Check signaling + logs"          │
+        ├───────────────────────────────────►│ SSH, parse 15K chars
+        │◄───────────────────────────────────┤ "Signaling OK, no errors"
+        │                                    │
+        │  "Check rate limits + permissions" │
+        ├───────────────────────────────────►│ SSH, DB query
+        │◄───────────────────────────────────┤ "Rate limiting on, perms OK"
+        │                                    │
+        │  "Enable debug, get exact error"   │
+        ├───────────────────────────────────►│ SSH, parse stack trace
+        │◄───────────────────────────────────┤ "SSL cert not trusted"
+        │                                    │
+        │  "Add cert, test API"              │
+        ├───────────────────────────────────►│ SSH, apply fix
+        │◄───────────────────────────────────┤ "HTTP 201 - fixed!"
+```
+
+"Seven agent calls. Each one focused on a specific question. Claude decided what to check next, the agent did the grunt work."
+
+**[Show token breakdown table]**
+
+| Debugging Phase | CC Direct | CC w/ Agent | Saved |
+|-----------------|-----------|-------------|-------|
+| Signaling + log analysis | ~15,000 | ~800 | 95% |
+| Config checks | ~8,000 | ~600 | 92% |
+| Rate limit investigation | ~6,000 | ~500 | 92% |
+| Permissions diagnosis | ~10,000 | ~600 | 94% |
+| Debug + stack trace | ~8,000 | ~700 | 91% |
+| CA cert investigation | ~5,000 | ~500 | 90% |
+| Apply + verify fix | ~4,000 | ~400 | 90% |
+| **Total** | **~56,000** | **~4,100** | **93%** |
+
+"56,000 tokens if I'd done this manually with Claude. 4,100 with the agent. That's 52,000 tokens saved on one debugging session."
+
+"And the issue? Self-signed SSL cert wasn't in the container's trust store. Ten minutes, problem solved."
+
+---
+
+## HOW IT WORKS (4:30 - 5:30)
 
 **[Show code or configuration]**
 
@@ -168,7 +224,7 @@ agent_chat({
 
 ---
 
-## KEY FEATURES (4:30 - 5:00)
+## KEY FEATURES (5:30 - 6:00)
 
 **[Bullet points appearing on screen]**
 
@@ -183,7 +239,7 @@ agent_chat({
 
 ---
 
-## CALL TO ACTION (5:00 - 5:30)
+## CALL TO ACTION (6:00 - 6:30)
 
 **[Show GitHub link]**
 
@@ -213,27 +269,39 @@ agent_chat({
 
 ## THUMBNAIL SUGGESTIONS
 
-Option A: "95% LESS" with Claude logo and downward arrow
-Option B: Split image - pile of tokens vs single token
-Option C: "Claude + Local LLM = $$$" with savings visualization
+Option A: "52K tokens saved" with debugging terminal screenshot
+Option B: Split image - Claude Direct vs Agent (token counters)
+Option C: "Infrastructure + Local LLM" with server icons
 
 ---
 
 ## DESCRIPTION / METADATA
 
 **Title Options:**
-- "Cut Claude API Costs by 95% with Local LLM Agents"
-- "Autonomous Agents: How I Reduced Claude Token Usage by 95%"
-- "The Claude Token Hack: Let Local LLMs Do the Heavy Lifting"
+- "Local LLM Delegation for Infrastructure Debugging - Real Token Measurements"
+- "52,000 Tokens Saved: Infrastructure Debugging with Local LLM Agents"
+- "Building on CC Token Saver: SSH Execution for Claude Code"
 
 **Description:**
 ```
-I built an autonomous agent that lets your local LLM execute tools directly,
-without Claude ever seeing the raw output. The result? Up to 95% reduction in
-Claude API token usage on analysis tasks.
+I implemented local LLM delegation for infrastructure debugging with built-in
+SSH execution. Here are my actual token measurements.
 
-This video shows real test results and explains how to set it up.
+This pattern isn't new - CC Token Saver, Ollama Claude, and Rubber Duck MCP
+do similar things. My implementation focuses on DevOps use cases with
+autonomous SSH execution.
 
+Real results from a Nextcloud debugging session:
+- Claude Direct: ~56,000 tokens
+- With Agent: ~4,100 tokens
+- Savings: 93%
+
+Prior Art:
+- CC Token Saver: https://github.com/csabakecskemeti/cc_token_saver_mcp
+- Ollama Claude: https://mcpmarket.com/server/ollama-claude
+- Rubber Duck: https://reddit.com/r/ClaudeAI/comments/1n9vxfp/
+
+My Implementation:
 GitHub: https://github.com/lambertmt/llama-mcp-server
 Branch: feature/agent-tool-calling
 
@@ -242,7 +310,7 @@ Tested with:
 - GPT-OSS 120B (Q8) via llama.cpp
 - AMD Strix Halo server with 128K context
 
-#ClaudeAI #LocalLLM #MCP #AIAgents #OpenSource
+#ClaudeAI #LocalLLM #MCP #DevOps #OpenSource
 ```
 
 **Tags:**

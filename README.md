@@ -38,13 +38,35 @@ The tokens don't disappear - they move from Claude (paid) to your local LLM (fre
 
 | Task | Claude (Direct) | Claude (w/ Agent) | Local LLM (free) | Savings |
 |------|-----------------|-------------------|------------------|---------|
+| **Debugging workflow (7 calls)** | **~56,000** | **~4,100** | **~35,000** | **93%** |
 | **Security audit** | **~11,800** | **~800** | **~11,000** | **93%** |
 | **Docker logs analysis** | **~10,500** | **~500** | **~10,000** | **95%** |
 | System health check | ~5,500 | ~1,500 | ~4,000 | 73% |
 | Log analysis (journalctl) | ~4,000 | ~800 | ~3,200 | 80% |
 | Code gen (w/ exploration) | ~2,700 | ~1,700 | ~1,000 | 37% |
 | Disk analysis | ~1,500 | ~500 | ~1,000 | 65% |
+| Code gen (small input) | ~1,550 | ~1,600 | ~1,500 | 0% |
 | Simple query (hostname) | ~500 | ~300 | ~200 | 40% |
+
+**When it doesn't help:** Code generation with small inputs (0% savings) - the output dominates token count either way. The agent shines when raw data is large.
+
+### Real-World Example: Debugging Nextcloud Talk
+
+A complete debugging session - Nextcloud Talk returning HTTP 400 errors:
+
+```
+7 agent calls over ~10 minutes:
+  1. Check signaling + parse logs     → "Config OK, no errors"
+  2. Check rate limits + DB           → "Rate limiting on, perms OK"
+  3. Enable debug, get stack trace    → "SSL cert not trusted"
+  4. Add cert to trust store          → "HTTP 201 - fixed!"
+
+Total Claude tokens (direct): ~56,000
+Total Claude tokens (w/ agent): ~4,100
+Tokens saved: ~52,000 (93%)
+```
+
+Claude stayed strategic (decided what to check), agent did tactical execution (SSH, log parsing, DB queries).
 
 ### Real Test: Security Audit
 
